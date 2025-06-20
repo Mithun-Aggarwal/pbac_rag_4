@@ -1,6 +1,4 @@
-# --- START OF FILE app.py ---
-
-# app.py - DEPLOYMENT READY
+# app.py - DEPLOYMENT READY (with NameError fix)
 
 # --- Hot-patch for sqlite3 (safe to keep for now) ---
 import sys
@@ -85,21 +83,31 @@ def extract_entities_from_prompt(prompt: str, entities_by_label: dict) -> list[s
     prompt_lower = prompt.lower()
     found_entities = set()
     all_known_names = set.union(*entities_by_label.values()) if entities_by_label else set()
-    
     for name in sorted(list(all_known_names), key=len, reverse=True):
         if re.search(r'\b' + re.escape(name) + r'\b', prompt_lower):
             found_entities.add(name)
-            
     return list(found_entities)
+
+# --- NEWLY RESTORED FUNCTION ---
+def retrieve_relevant_chunks(query_embedding, index, top_k=5):
+    """Retrieves relevant chunks from Pinecone for broad, non-entity searches."""
+    if not index: return {}
+    try:
+        results = index.query(vector=query_embedding, top_k=top_k, include_metadata=True)
+        context_chunks = {"documents": [[]], "metadatas": [[]], "distances": [[]]}
+        for match in results.get('matches', []):
+            meta = match.get('metadata', {})
+            context_chunks['documents'][0].append(meta.get('text', ''))
+            context_chunks['metadatas'][0].append(meta)
+            context_chunks['distances'][0].append(1 - match.get('score', 0.0))
+        return context_chunks
+    except Exception as e:
+        st.error(f"Error querying Pinecone: {e}")
+        return {}
 
 def get_context_for_entity(entity_name: str, _driver, index, config: dict) -> dict:
     context = {"graph": "", "vector": "", "sources": []}
-    
-    cypher_query = """
-    MATCH (n) WHERE toLower(n.name) = $name
-    MATCH (n)-[r]-(t)
-    RETURN head(labels(n)) as n_label, n.name as n_name, type(r) as rel, head(labels(t)) as t_label, t.name as t_name LIMIT 5
-    """
+    cypher_query = "MATCH (n) WHERE toLower(n.name) = $name MATCH (n)-[r]-(t) RETURN head(labels(n)) as n_label, n.name as n_name, type(r) as rel, head(labels(t)) as t_label, t.name as t_name LIMIT 5"
     try:
         with _driver.session(database=os.getenv("NEO4J_DATABASE")) as session:
             result = session.run(cypher_query, name=entity_name)
@@ -110,7 +118,6 @@ def get_context_for_entity(entity_name: str, _driver, index, config: dict) -> di
                 context["sources"].append({"type": "graph", "text": graph_text})
     except Exception as e:
         print(f"Error querying graph context for {entity_name}: {e}")
-
     query_embedding = embed_query(f"Detailed information about {entity_name}", config)
     try:
         results = index.query(vector=query_embedding, top_k=3, include_metadata=True)
@@ -127,11 +134,9 @@ def get_context_for_entity(entity_name: str, _driver, index, config: dict) -> di
             context["vector"] = "Relevant text from documents:\n" + "\n".join(vector_parts)
     except Exception as e:
         print(f"Error querying vector context for {entity_name}: {e}")
-        
     return context
 
 # --- 3. Load Configurations and Backend ---
-
 config = load_backend_config()
 ui_config = load_ui_config()
 pinecone_index = load_pinecone_index(config)
@@ -142,7 +147,7 @@ graph_entities = load_graph_entities(neo4j_driver) if neo4j_driver else {}
 st.set_page_config(page_title="AI Document Intelligence", page_icon="🧠", layout="wide")
 with st.sidebar:
     st.header("About")
-    st.markdown(ui_config.get('about_text', "This chatbot finds answers in your documents..."))
+    st.markdown(ui_config.get('about_text', "..."))
     st.header("System Status")
     try:
         vector_count = pinecone_index.describe_index_stats()['total_vector_count'] if pinecone_index else 0
@@ -158,7 +163,7 @@ st.title("🧠 AI Document Intelligence")
 if "messages" not in st.session_state or len(st.session_state.messages) == 0:
     st.session_state.messages = []
     with st.chat_message("assistant"):
-        st.markdown(ui_config.get('welcome_message', "Hello! How can I help you?"))
+        st.markdown(ui_config.get('welcome_message', "Hello!"))
     example_questions = ui_config.get('example_questions', [])
     if example_questions:
         cols = st.columns(len(example_questions))
@@ -199,12 +204,22 @@ if prompt:
             status.update(label="Step 1: Identifying key entities...")
             entities = extract_entities_from_prompt(prompt, graph_entities)
             
+            # --- RAG LOGIC ---
             if not entities:
+                # --- THIS BLOCK IS NOW FIXED ---
                 status.update(label="No specific entities found. Performing broad search...")
                 query_embedding = embed_query(prompt, config)
                 context_chunks = retrieve_relevant_chunks(query_embedding, pinecone_index, top_k=5)
                 final_context_for_llm = "\n\n".join(context_chunks.get("documents", [[]])[0])
-                # We need to populate sources_for_display here as well for consistency
+                # Populate sources for display
+                if context_chunks.get("documents"):
+                    for i in range(len(context_chunks['documents'][0])):
+                        meta = context_chunks['metadatas'][0][i]
+                        sources_for_display.append({
+                            "type": "vector", "doc_title": meta.get('doc_title', 'N/A'),
+                            "text": meta.get('text', ''), "distance": context_chunks['distances'][0][i]
+                        })
+                context_for_generator = context_chunks
             
             elif len(entities) == 1:
                 entity = entities[0]
@@ -212,7 +227,9 @@ if prompt:
                 context_data = get_context_for_entity(entity, neo4j_driver, pinecone_index, config)
                 final_context_for_llm = f"{context_data['graph']}\n\n{context_data['vector']}"
                 sources_for_display.extend(context_data['sources'])
-            else:
+                context_for_generator = {"documents": [[final_context_for_llm]], "metadatas": [[{"doc_title": "Compiled Analysis"}]], "distances": [[0.0]]}
+            
+            else: # len(entities) > 1
                 status.update(label=f"Step 2: Analyzing multiple entities: {', '.join(e.capitalize() for e in entities)}...")
                 all_contexts = []
                 for entity in entities:
@@ -223,24 +240,12 @@ if prompt:
                     context_block = f"--- CONTEXT FOR {entity.upper()} ---\n{context_data['graph']}\n\n{context_data['vector']}\n"
                     all_contexts.append(context_block)
                 final_context_for_llm = "\n".join(all_contexts)
+                context_for_generator = {"documents": [[final_context_for_llm]], "metadatas": [[{"doc_title": "Compiled Analysis"}]], "distances": [[0.0]]}
             
             status.update(label="Step 3: Synthesizing final answer...")
-            
-            context_for_generator = {"documents": [[final_context_for_llm]]}
-            
-            response_text = generate_response(
-                prompt, context_for_generator, config, chat_history=st.session_state.messages
-            )
+            response_text = generate_response(prompt, context_for_generator, config, chat_history=st.session_state.messages)
             status.update(label="Response generated!", state="complete", expanded=False)
 
         st.markdown(response_text)
-
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": response_text,
-        "sources": sources_for_display
-    })
-    
+    st.session_state.messages.append({"role": "assistant", "content": response_text, "sources": sources_for_display})
     st.rerun()
-
-# --- END OF FILE app.py ---
