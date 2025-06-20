@@ -6,5 +6,6 @@ PyYAML
 google-generativeai
 chromadb==0.4.24
 neo4j==5.28.1
+pinecone-client==3.2.2
 PyMuPDF
 pysqlite3-binary
