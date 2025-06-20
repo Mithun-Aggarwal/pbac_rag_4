@@ -1,0 +1,24 @@
+# .gitignore
+
+# Python & System Files
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.vscode/
+
+# Ignore Source Documents & Intermediate Data
+# We only want the final vector store, not the raw materials.
+documents/
+logs/
+additional_info/
+tmp/
+home/
+Compare/
+
+# Local output and cache files
+output_folder/
+output_folder
+
+# Credentials
+.env

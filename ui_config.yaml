@@ -1,0 +1,24 @@
+# --- START OF FILE ui_config.yaml ---
+
+welcome_message: |
+  **Welcome to the AI Document Intelligence Platform!**
+
+  I can help you find and synthesize information from your PBAC documents. You can ask me to:
+  - **Find specific facts:** "Who is the sponsor of Esketamine?"
+  - **Summarize topics:** "What are common reasons for a negative recommendation?"
+  - **Explore relationships:** I use a Knowledge Graph to understand how drugs, sponsors, and conditions are connected.
+  - **Compare entities:** "Compare the clinical evidence for Esketamine and Buprenorphine."
+
+  Start by typing your question below, or try one of these examples.
+
+about_text: This chatbot finds answers in your documents using a RAG pipeline powered by a Knowledge Graph (Neo4j) and a Vector Store (Pinecone).
+
+example_questions:
+  - title: "Who sponsors Esketamine?"
+    query: "Who is the sponsor of Esketamine?"
+  - title: "What is Buprenorphine for?"
+    query: "What condition is Buprenorphine primarily used for?"
+  - title: "Compare two drugs"
+    query: "Compare the clinical evidence for Esketamine and Buprenorphine."
+
+# --- END OF FILE ui_config.yaml ---
